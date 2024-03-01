@@ -1,0 +1,60 @@
+import cv2
+import numpy as np
+ 
+def process_frame(frame, backSub):
+    # Convert to grayscale and apply Gaussian blur
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (21, 21), 0)
+ 
+    # Subtract the background
+    fg_mask = backSub.apply(blurred)
+ 
+    # Apply thresholding to get binary image
+    _, thresh = cv2.threshold(fg_mask, 25, 255, cv2.THRESH_BINARY)
+ 
+    # Dilate the thresholded image to fill in holes
+    dilated = cv2.dilate(thresh, None, iterations=2)
+ 
+    # Find contours on the thresholded image
+    contours, _ = cv2.findContours(
+        dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+ 
+    return contours
+ 
+# Initialize the video capture
+video_path = 'video_cassure.avi'
+cap = cv2.VideoCapture(video_path)
+ 
+# Check if video opened successfully
+if not cap.isOpened():
+    print(f"Error opening video file {video_path}")
+    exit()
+ 
+# Create a background subtractor object
+backSub = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16, detectShadows=False)
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    contours = process_frame(frame, backSub)
+
+    boxes = []
+    for contour in contours:
+        if cv2.contourArea(contour) < 100:
+            continue
+        x, y, w, h = cv2.boundingRect(contour)
+        boxes.append([x, y, w, h])
+
+    # Dessiner les rectangles autour des contours détectés
+    for (x, y, w, h) in boxes:
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+    cv2.imshow("Détection de mouvement", frame)
+    
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()

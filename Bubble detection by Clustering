@@ -1,0 +1,156 @@
+import cv2
+import numpy as np
+from sklearn.cluster import DBSCAN
+
+
+def non_max_suppression(boxes, overlapThresh):
+    # Si aucune boîte n'est fournie, retournez une liste vide
+    if len(boxes) == 0:
+        return []
+
+    # Initialisation de la liste des index sélectionnés
+    pick = []
+
+    # Coordonnées des boîtes et calcul de l'aire
+    x1 = boxes[:,0]
+    y1 = boxes[:,1]
+    x2 = boxes[:,0] + boxes[:,2]
+    y2 = boxes[:,1] + boxes[:,3]
+    area = (x2 - x1) * (y2 - y1)
+
+    # Triez les boîtes selon l'axe des y
+    idxs = np.argsort(y2)
+
+    # Tant qu'il reste des index dans la liste
+    while len(idxs) > 0:
+        # Prenez le dernier index de la liste et ajoutez l'index à la liste des sélectionnés
+        last = len(idxs) - 1
+        i = idxs[last]
+        pick.append(i)
+
+        # Trouvez la plus grande (x, y) coordonnées pour le début de la boîte
+        # et la plus petite (x, y) coordonnées pour la fin de la boîte
+        xx1 = np.maximum(x1[i], x1[idxs[:last]])
+        yy1 = np.maximum(y1[i], y1[idxs[:last]])
+        xx2 = np.minimum(x2[i], x2[idxs[:last]])
+        yy2 = np.minimum(y2[i], y2[idxs[:last]])
+
+        # Calculez la largeur et la hauteur de la boîte
+        w = np.maximum(0, xx2 - xx1)
+        h = np.maximum(0, yy2 - yy1)
+
+        # Calculez l'aire de chevauchement et l'aire de chevauchement sur l'aire totale
+        overlap = (w * h) / area[idxs[:last]]
+
+        # Supprimez les index de la liste qui se chevauchent au-delà du seuil
+        idxs = np.delete(idxs, np.concatenate(([last], np.where(overlap > overlapThresh)[0])))
+
+    # Retournez seulement les boîtes sélectionnées
+    return boxes[pick].astype("int")
+
+def cluster_and_merge_boxes(boxes, eps=30, min_samples=1):
+    if len(boxes) <= 1:
+        return boxes
+
+    # Calculer les centres des boîtes
+    centers = np.array([(x + w / 2, y + h / 2) for x, y, w, h in boxes])
+
+    # Appliquer DBSCAN sur les centres des boîtes
+    clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(centers)
+
+    # Préparer un dictionnaire pour recueillir les points de chaque cluster
+    clusters = {}
+
+    # Itérer sur les étiquettes de cluster et les centres pour les regrouper
+    for label, center, box in zip(clustering.labels_, centers, boxes):
+        if label not in clusters:
+            clusters[label] = {
+                "min_x": np.inf,
+                "min_y": np.inf,
+                "max_x": -np.inf,
+                "max_y": -np.inf,
+            }
+        # Mettre à jour les coordonnées pour le cluster
+        min_x, min_y, max_x, max_y = clusters[label].values()
+        x, y, w, h = box
+        clusters[label] = {
+            "min_x": min(min_x, x),
+            "min_y": min(min_y, y),
+            "max_x": max(max_x, x + w),
+            "max_y": max(max_y, y + h),
+        }
+
+    # Fusionner les boîtes dans chaque cluster
+    merged_boxes = []
+    for cluster in clusters.values():
+        merged_boxes.append([
+            cluster["min_x"],
+            cluster["min_y"],
+            cluster["max_x"] - cluster["min_x"],
+            cluster["max_y"] - cluster["min_y"]
+        ])
+
+    return merged_boxes
+ 
+def process_frame(frame):
+    # Convert to grayscale and apply Gaussian blur
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (21, 21), 0)
+ 
+    # Subtract the background
+    fg_mask = backSub.apply(blurred)
+ 
+    # Apply thresholding to get binary image
+    _, thresh = cv2.threshold(fg_mask, 25, 255, cv2.THRESH_BINARY)
+ 
+    # Dilate the thresholded image to fill in holes
+    dilated = cv2.dilate(thresh, None, iterations=2)
+ 
+    # Find contours on the thresholded image
+    contours, _ = cv2.findContours(
+        dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+ 
+    return contours
+ 
+# Initialize the video capture
+video_path = 'video_cassure.avi'
+cap = cv2.VideoCapture(video_path)
+ 
+# Check if video opened successfully
+if not cap.isOpened():
+    print(f"Error opening video file {video_path}")
+    exit()
+ 
+# Create a background subtractor object
+backSub = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16, detectShadows=False)
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    contours = process_frame(frame)
+
+    boxes = []
+    for contour in contours:
+        if cv2.contourArea(contour) < 100:
+            continue
+        x, y, w, h = cv2.boundingRect(contour)
+        boxes.append([x, y, w, h])
+
+    # Cluster and merge boxes
+    boxes = cluster_and_merge_boxes(boxes, eps=60, min_samples=1)
+
+    # Apply NMS on the merged boxes
+    pick = non_max_suppression(np.array(boxes), 0.3)  # Adjust the threshold as needed
+
+    for (x, y, w, h) in pick:
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+    cv2.imshow("Moving Object Detection", frame)
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
